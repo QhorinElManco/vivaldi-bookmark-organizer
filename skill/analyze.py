@@ -10,7 +10,12 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from urllib.parse import urlparse
 
-from _common import default_chrome_bookmarks_path, load, walk_urls
+from _common import (
+    default_chrome_bookmarks_path,
+    load,
+    walk_urls,
+    walk_urls_from_root,
+)
 
 
 def main() -> int:
@@ -37,15 +42,18 @@ def main() -> int:
     for region in ("bookmark_bar", "other", "synced"):
         if region not in roots:
             continue
-        items = list(walk_urls(roots[region]))
+        items = list(walk_urls_from_root(roots[region], region))
         region_totals[region] = len(items)
         for folder_path, node in items:
             url = node.get("url", "")
-            by_url[url].append((folder_path, node))
+            if url:
+                by_url[url].append((folder_path, node))
             try:
-                host = urlparse(url).netloc.lower().lstrip("www.")
+                host = (urlparse(url).hostname or "").lower()
             except ValueError:
                 host = ""
+            if host.startswith("www."):
+                host = host[4:]
             if host:
                 domains[host] += 1
 
@@ -92,7 +100,7 @@ def main() -> int:
                 continue
             print(f"=== {region} loose URLs ({len(loose)}) ===")
             for c in loose:
-                print(f"  id={c.get('id', '?'):>5s}  {c.get('name', '')[:55]}")
+                print(f"  id={str(c.get('id', '?')):>5s}  {c.get('name', '')[:55]}")
                 print(f"          {c.get('url', '')[:90]}")
             print()
 

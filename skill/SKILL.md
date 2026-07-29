@@ -68,6 +68,16 @@ Save plan to a temp path. Show the user the plan before running apply.
 ### 5. Apply
 Run `python3 apply.py <bookmarks-path> <plan-path> --in-place`. The `--in-place` flag creates an auto-backup and overwrites the file. Or omit `--in-place` and write to `Bookmarks.new`, then have user inspect before manual replacement.
 
+**Check the exit code — it is the contract:**
+
+| Code | Meaning | What to do |
+|---|---|---|
+| 0 | Everything applied | Proceed to verify |
+| 2 | Some plan entries failed — **nothing was written** | Read the errors, fix the plan, re-run. Do not pass `--allow-partial` unless the user explicitly accepts a partial apply. |
+| 3 | Internal safety check tripped (nodes would be lost) | Stop. Report it as a bug; the file is untouched. |
+
+Common causes of exit 2: an id listed twice in `delete_ids`/`moves`; a `to_path` that doesn't start with a root key (`bookmark_bar`/`other`/`synced`); moving a folder into itself or its own descendant.
+
 ### 6. Verify
 Re-run `analyze.py` on the modified file to confirm: counts add up, duplicates gone, new folders populated, no orphans. Show the user a one-screen summary.
 
@@ -82,6 +92,8 @@ Tell the user:
 - Always strip the `checksum` field — `apply.py` does this automatically. Chrome regenerates on next launch.
 - Output JSON in compact form (no indent). `apply.py` does this automatically.
 - IDs are stable across edits; **prefer id-based addressing** in the plan over URL or name (URLs duplicate, names collide).
+- Never list the same id twice in `delete_ids` or `moves` — `apply.py` rejects the plan rather than guess the intent.
+- `analyze.py` prints folder paths using root **keys** (`other/AI Tools`), the same form `to_path` expects, so paths can be copied straight from its output.
 - Empty folders the user already has (e.g. `New folder`) — leave them alone unless asked.
 - Folders with garbled-zero-width-character names (Feishu/Lark docs sometimes embed these) — preserve verbatim; renaming risks breaking deep links the user remembers by URL.
 - For deduplication, prefer keeping the URL with the more specific path over the bare-domain version.

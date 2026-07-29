@@ -14,7 +14,6 @@ Order of operations: deletes -> create_folders -> moves.
 """
 from __future__ import annotations
 import argparse
-import json
 import shutil
 import sys
 import time
@@ -23,11 +22,13 @@ from pathlib import Path
 
 from _common import (
     collect_max_id,
+    detach,
     find_folder,
     index_by_id,
+    is_within,
     load,
-    resolve_path,
     save_compact,
+    subtree_ids,
 )
 
 
@@ -47,6 +48,21 @@ def chrome_timestamp() -> str:
     """Chrome WebKit-style timestamp: microseconds since 1601-01-01."""
     epoch_diff = 11644473600
     return str(int((time.time() + epoch_diff) * 1_000_000))
+
+
+def _deepest_existing(roots: dict, path: str) -> dict | None:
+    """Walk `path` as far as it already exists; return the deepest existing folder.
+    None if the root key is unknown. Used to validate a move before creating anything."""
+    parts = [p for p in path.split("/") if p]
+    if not parts or parts[0] not in roots:
+        return None
+    cur = roots[parts[0]]
+    for part in parts[1:]:
+        nxt = find_folder(cur, part)
+        if nxt is None:
+            break
+        cur = nxt
+    return cur
 
 
 def ensure_folder(roots: dict, path: str, id_counter: list[int]) -> dict:
@@ -74,6 +90,8 @@ def main() -> int:
     p.add_argument("plan", help="Path to plan JSON")
     p.add_argument("--out", help="Output path (default: same as input + .new)")
     p.add_argument("--in-place", action="store_true", help="Overwrite input (auto-backup created)")
+    p.add_argument("--allow-partial", action="store_true",
+                   help="Write the result even if some plan entries failed (default: abort, write nothing)")
     args = p.parse_args()
 
     bm_path = Path(args.bookmarks)
@@ -96,6 +114,8 @@ def main() -> int:
     id_counter = [max(ids) if ids else 0]
 
     by_id = index_by_id(data)
+    before_ids = set(by_id)
+    removed_ids: set[str] = set()
 
     deletes = list(plan.get("delete_ids", []))
     creates = list(plan.get("create_folders", []))
@@ -103,13 +123,21 @@ def main() -> int:
 
     deleted, created, moved, errors = 0, 0, 0, []
 
+    seen_deletes: set[str] = set()
     for nid in deletes:
         nid = str(nid)
+        if nid in seen_deletes:
+            errors.append(f"delete: id {nid} listed more than once")
+            continue
+        seen_deletes.add(nid)
         if nid not in by_id:
             errors.append(f"delete: id {nid} not found")
             continue
         node, parent_list = by_id[nid]
-        parent_list.remove(node)
+        if not detach(node, parent_list):
+            errors.append(f"delete: id {nid} already removed (an ancestor was deleted too)")
+            continue
+        removed_ids |= subtree_ids(node)
         deleted += 1
 
     for entry in creates:
@@ -125,24 +153,62 @@ def main() -> int:
 
     by_id = index_by_id(data)
 
+    seen_moves: set[str] = set()
     for mv in moves:
         nid = str(mv.get("id", ""))
         to = mv.get("to_path", "")
         if not nid or not to:
             errors.append(f"move: missing id or to_path in {mv}")
             continue
+        if nid in seen_moves:
+            errors.append(f"move: id {nid} listed more than once")
+            continue
+        seen_moves.add(nid)
         if nid not in by_id:
             errors.append(f"move: id {nid} not found")
+            continue
+        node, parent_list = by_id[nid]
+        # Reject before creating anything: moving a folder into itself or its own
+        # descendant detaches the whole subtree, which json.dump would silently drop.
+        existing = _deepest_existing(roots, to)
+        if existing is not None and is_within(existing, node):
+            errors.append(f"move: id {nid} cannot move into itself or its own descendant ({to!r})")
             continue
         try:
             target = ensure_folder(roots, to, id_counter)
         except ValueError as e:
             errors.append(f"move id={nid} to {to!r}: {e}")
             continue
-        node, parent_list = by_id[nid]
-        parent_list.remove(node)
+        if not detach(node, parent_list):
+            errors.append(f"move: id {nid} already removed (an ancestor was deleted or moved)")
+            continue
         target.setdefault("children", []).append(node)
+        by_id[nid] = (node, target["children"])
         moved += 1
+
+    summary = f"{deleted} delete(s), {created} folder(s) created, {moved} move(s)"
+
+    def dump_errors(header: str) -> None:
+        print(f"\n{header}", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+
+    # Hard invariant: nothing may vanish except what delete_ids removed. Not bypassable.
+    lost = before_ids - removed_ids - set(index_by_id(data))
+    if lost:
+        print(f"ERROR: refusing to write — {len(lost)} node(s) would be lost: "
+              f"{', '.join(sorted(lost)[:20])}", file=sys.stderr)
+        if errors:
+            dump_errors(f"{len(errors)} error(s) also recorded:")
+        print("This is a bug in apply.py; the input file is untouched.", file=sys.stderr)
+        return 3
+
+    if errors and not args.allow_partial:
+        print(f"Aborted: {len(errors)} error(s), nothing written "
+              f"(would have applied {summary}).", file=sys.stderr)
+        dump_errors("Errors:")
+        print("Fix the plan, or pass --allow-partial to write anyway.", file=sys.stderr)
+        return 2
 
     if args.in_place:
         backup = bm_path.with_name(bm_path.name + f".backup-{int(time.time())}")
@@ -154,14 +220,11 @@ def main() -> int:
 
     save_compact(out, data)
 
-    print(f"Applied: {deleted} delete(s), {created} folder(s) created, {moved} move(s)")
+    print(f"Applied: {summary}")
     if errors:
-        print(f"\n{len(errors)} error(s):", file=sys.stderr)
-        for e in errors:
-            print(f"  - {e}", file=sys.stderr)
-        return 2
+        dump_errors(f"{len(errors)} error(s), written anyway (--allow-partial):")
     print(f"Written: {out}")
-    return 0
+    return 2 if errors else 0
 
 
 if __name__ == "__main__":

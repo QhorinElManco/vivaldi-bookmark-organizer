@@ -2,7 +2,7 @@
 
 AI-assisted reorganization of your Chrome (or any Chromium-based browser) bookmarks. You bring a messy `Bookmarks` file with hundreds of unsorted items; Claude proposes a category structure; you confirm; the tool applies it.
 
-> Built after one too many "where did I save that link" moments. Source: [a thread about treating bookmarks as a JSON file the AI can edit](#).
+> Built after one too many "where did I save that link" moments.
 
 ## Components
 
@@ -65,6 +65,7 @@ Pass the path explicitly via `python3 skill/analyze.py /path/to/Bookmarks`.
 ## Design principles
 
 - **The user owns their data.** Every destructive action requires explicit confirmation. Backups are timestamped and never auto-deleted.
+- **All or nothing.** If any plan entry fails, `apply.py` writes nothing and exits 2 — a half-applied reorganization is harder to recover from than none. `--allow-partial` opts out. A final invariant check refuses to write if any node would disappear other than through `delete_ids`.
 - **Reuse existing structure.** If the user has hand-curated folders, those names are preserved; new buckets only appear when no existing folder fits.
 - **Conservative bias.** When in doubt, leave it alone. Better one orphan loose bookmark than a wrong categorization.
 - **Stateless tools, smart prompts.** The Python scripts are mechanical (read/write/validate). All the judgment calls (which folders, what's a duplicate) live in the SKILL.md prompt that Claude executes.

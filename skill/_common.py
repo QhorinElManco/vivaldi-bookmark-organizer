@@ -48,28 +48,53 @@ def walk_urls(node: dict, folder_path: str = "") -> Iterator[tuple[str, dict]]:
         yield folder_path, node
 
 
+def walk_urls_from_root(root: dict, root_key: str) -> Iterator[tuple[str, dict]]:
+    """Like walk_urls, but paths start with the root *key* (bookmark_bar/other/synced)
+    instead of the root's display name, so they are usable as plan `to_path` values."""
+    for child in root.get("children", []) or []:
+        yield from walk_urls(child, root_key)
+
+
+def is_within(node: dict, ancestor: dict) -> bool:
+    """True if node is ancestor itself or lives anywhere under it."""
+    if node is ancestor:
+        return True
+    for c in ancestor.get("children", []) or []:
+        if is_within(node, c):
+            return True
+    return False
+
+
+def subtree_ids(node: dict) -> set[str]:
+    """Every id at or below node."""
+    out: set[str] = set()
+
+    def _w(n: dict) -> None:
+        if not isinstance(n, dict):
+            return
+        if n.get("id") is not None:
+            out.add(str(n["id"]))
+        for c in n.get("children", []) or []:
+            _w(c)
+
+    _w(node)
+    return out
+
+
+def detach(node: dict, parent_list: list) -> bool:
+    """Remove node from parent_list by identity. False if it was already gone."""
+    for i, c in enumerate(parent_list):
+        if c is node:
+            del parent_list[i]
+            return True
+    return False
+
+
 def find_folder(parent: dict, name: str) -> dict | None:
     for c in parent.get("children", []):
         if c.get("type") == "folder" and c.get("name") == name:
             return c
     return None
-
-
-def resolve_path(roots: dict, path: str) -> dict | None:
-    """Resolve a path like 'other/AI Tools' to a folder node. Returns None if not found."""
-    parts = [p for p in path.split("/") if p]
-    if not parts:
-        return None
-    root_name = parts[0]
-    if root_name not in roots:
-        return None
-    cur = roots[root_name]
-    for part in parts[1:]:
-        nxt = find_folder(cur, part)
-        if nxt is None:
-            return None
-        cur = nxt
-    return cur
 
 
 def collect_max_id(node: dict, acc: list[int]) -> None:
